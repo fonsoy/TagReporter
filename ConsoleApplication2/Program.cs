@@ -6,61 +6,142 @@ using System.Threading.Tasks;
 using System.IO;
 using System.Collections.Concurrent;
 using System.Drawing;
+using System.Text.RegularExpressions;
 using TagLib;
 
 namespace TagReporter
 {
     class Program
     {
-        static int mismatchedFiles;
+        const int mandatoryArgs = 2;
+        const char optionStart = '/';
+        const char optionDelimiter = ':';
+        static string folder;
+        static int maxRecursionDepth;
         static int numberOfFiles;
-        static bool checkForMetal;
-        static StringBuilder log;
+        static HashSet<string> acceptedExtensions = new HashSet<string>{".mp3", ".flac", ".aac", ".ogg", ".aiff", ".ape", ".wav"};
+        static Dictionary<string, string> genreMap = new Dictionary<string, string>(StringComparer.InvariantCultureIgnoreCase) { { "Trip-Hop", "Trip Hop" }, { "Hip-Hop", "Hip Hop" }, { "DM BM", "Doom Black Metal" } };
+        public static int FalseFileCounter { get; set; }
+        public static bool CheckForMetal { get; set; }
         static void Main(string[] args)
-        {
-            falseFileCounter = 0;
-            string path = @"Z:\Muziek\Pop & Rock";
-            //string path = @"C:\\Users\\Fritz\\Desktop\\Raketkanon";
-            getCheckForMetal = false;
-            log = new StringBuilder();
-            log.Clear();
+        {    
+#if DEBUG
+            args = new string[2];
+            args[0] = @"E:\Media\Music\Test";
+            args[1] = "0";
+#endif
+            ParseArguments(args);
 
-            ListAllFoldersUnder(path, 0);
-            WriteLogFile();
-            Console.Write("\nKlaar");
-            Console.ReadLine();
+            System.IO.Directory.CreateDirectory(@"C:\temp\");
+
+            ListAllFoldersUnder(folder, maxRecursionDepth);
+            Console.WriteLine("Klaar");
+            Console.WriteLine("Press any key to exit");
+            Console.ReadKey();
         }
-        public static void ListAllFoldersUnder(string path, int indent)
+
+        public static void ParseArguments(string[] arguments)
         {
-            foreach(string file in Directory.GetFiles(path))
+            if (arguments.Length < mandatoryArgs)
+                WriteError("Not all arguments are specified");
+
+            arguments = arguments.Take(mandatoryArgs).Where(arg => !string.IsNullOrWhiteSpace(arg)).ToArray();
+            if (arguments.Where(arg => arg.StartsWith(optionStart.ToString())).Count() > 0)
+                WriteError(string.Format("First {0} arguments cannot be options, see usage", mandatoryArgs));
+
+            try
+            {
+
+                for (int i = 0; i <= mandatoryArgs; i++)
+                {
+                    switch (i)
+                    {
+                        case 0:
+                            folder = arguments[i];
+                            if (!Directory.Exists(folder)) 
+                            {
+                                WriteError("folder does not exist");
+                            }
+                            break;
+                        case 1:
+                            maxRecursionDepth = int.Parse(arguments[i]);
+                            if (maxRecursionDepth == 0)
+                            {
+                                maxRecursionDepth = int.MaxValue;
+                            }
+                            break;
+                        default:
+                            break;
+                    }
+                }
+            }
+            catch (InvalidCastException ex)
+            {
+                WriteError(string.Format("in argument \"{0}\"", ex.Message));
+            }
+
+        }
+        public static void ConsoleAndLog(string message, bool writeLine = true, bool noLog = false)
+        {
+            if (writeLine)
+            {
+                Console.WriteLine(message);
+            }
+            else
+            {
+                Console.Write(message);
+            }
+            if (!noLog)
+            {
+                var writer = new StreamWriter(@"C:\temp\log.txt", true);
+                writer.WriteLine(message);
+                writer.Close();
+            }
+        }
+        public static void WriteError(string err)
+        {
+            ConsoleAndLog("");
+            ConsoleAndLog("Error: " + err);
+            ConsoleAndLog("");
+
+            Console.WriteLine("Press any key to exit");
+            Console.ReadKey();
+            System.Environment.Exit(0);
+        }
+        public static void WriteWarning(string err)
+        {
+            ConsoleAndLog("");
+            ConsoleAndLog("Warning: " + err);
+            ConsoleAndLog("");
+        }
+        public static void ListAllFoldersUnder(string folder, int depth)
+        {
+            depth--;
+            foreach (string file in Directory.GetFiles(folder).Where(k => acceptedExtensions.Contains(Path.GetExtension(k))))
             {
                 numberOfFiles++;
                 if (numberOfFiles % 100 == 0)
-                    Console.Write(numberOfFiles.ToString() + " ");
-                if (file.Split('.').Last().Equals("jpg") || file.Split('.').Last().Equals("jpeg") || file.Split('.').Last().Equals("gif")
-                    || file.Split('.').Last().Equals("txt") || file.Split('.').Last().Equals("nfo") || file.Split('.').Last().Equals("db")
-                    || file.Split('.').Last().Equals("log") || file.Split('.').Last().Equals("bmp") || file.Split('.').Last().Equals("png")
-                    || file.Split('.').Last().Equals("old") || file.Split('.').Last().Equals("m3u"))
                 {
-                    return;
+                    ConsoleAndLog(numberOfFiles.ToString() + " ", false);
                 }
-                CheckTags(file, path);
-                
+
+                CheckTags(file, folder);
             }
-            foreach (string folder in Directory.GetDirectories(path))
-            {
-                ListAllFoldersUnder(folder, indent + 2);
+            if (depth > 0) { 
+                foreach (string dir in Directory.GetDirectories(folder))
+                {
+                    ListAllFoldersUnder(dir, depth--);
+                }
             }
         }
-        public static void CheckTags(string mp3file, string path)
+        public static void CheckTags(string mp3file, string folder)
         {
             try
             {
-                TagLib.File tagFile = TagLib.File.Create(mp3file);
+                var tagFile = TagLib.File.Create(mp3file);
 
                 //werkt met track# titel artiest albumnaam jaar genre
-                StringBuilder probleem = new StringBuilder();
-                probleem.Clear();
+                var probleem = new StringBuilder();
 
                 try
                 {
@@ -87,70 +168,55 @@ namespace TagReporter
                     probleem.Append("   - Albumart is leeg \n");
                     try
                     {
-                        FixAlbumArt(mp3file, path, tagFile);
+                        FixAlbumArt(mp3file, folder, tagFile);
                     }
                     catch (Exception e)
                     {
                         probleem.Append("     Er is iets misgegaan bij fixen: " + e.Message + "\n");
                     }
                 }
-                char[] splitter = { '\\' }; //controle op bestandsnaam
-                string filename = mp3file.Split(splitter)[mp3file.Split(splitter).Length - 1];
+
+                string filename = Path.GetFileNameWithoutExtension(mp3file);
                 int tracknumber;
                 if (!int.TryParse(filename.Substring(0,2), out tracknumber))
                 {
                     probleem.Append("   - Filenaam tracknummer ontbreekt");
                 }
-                if(!string.IsNullOrEmpty(probleem.ToString()))
+                if(probleem.ToString() != "")
                 {
-                    log.Append("Tag probleem: " + mp3file);
-                    log.Append(probleem.ToString());
+                    WriteWarning("Tag probleem: " + mp3file + "\r\n" + probleem.ToString());
                 }
-                else if (falseFileCounter < 10)
+                else
                 {
-                    falseFileCounter++;
+                    FalseFileCounter++;
                 }
             }
             catch (Exception e)
             {
-                log.Append("Probleem met dit bestand: \n" + mp3file + "\nError: " + e.ToString());
+                WriteWarning("Probleem met dit bestand: " + mp3file + "\r\nError: " + e.ToString());
             }
 
         }
         public static void fixGenres(string path, TagLib.File tagFile)
         {
-            string genres = RepairGenres(tagFile);
-            string newLongGenre = genres;
-                if (genres.ToLower().Contains("trip-hop"))
-                {
-                    //newLongGenre = genres.Replace("trip-hop", "Hip Hop");
-                    newLongGenre = genres.Replace("Trip-Hop", "Trip Hop");
-                    //newLongGenre = genres.Replace("Trip-hop", "Hip Hop");
-                    log.Append("Vervang genre: " + genres + " voor " + newLongGenre);
-                }
-                else if (genres.ToLower().Contains("Hip-Hop") ||
-                    genres.ToLower().Contains("hip-hop") ||
-                    genres.ToLower().Contains("hip-hop"))
-                {
-                    //newLongGenre = genres.Replace("hip-hop", "Hip Hop");
-                    newLongGenre = genres.Replace("Hip-Hop", "Hip Hop");
-                    //newLongGenre = genres.Replace("Hip-hop", "Hip Hop");
-                    log.Append("Vervang genre: " + genres + " voor " + newLongGenre);
-                }
-                else if (!genres.ToLower().Contains("metal") && getCheckForMetal)
-                {
-                    throw new Exception("    - Metal verwacht in genre");
-                }
-            
-            string[] genreArray = new string[1];
-            if (!newLongGenre.Equals(genres))
+            var genres = tagFile.Tag.Genres;
+            var genresLong = String.Join("/", genres);
+            string[] newGenres = genres.AsEnumerable().Select(k => (genreMap.ContainsKey(k) ? genreMap[k] : k)).ToArray();
+
+            var newGenresLong = String.Join("/", newGenres);
+
+            if (!newGenresLong.ToLower().Contains("metal") && CheckForMetal)
             {
-                
-                genreArray[0] = newLongGenre;
-                tagFile.Tag.Genres = genreArray;
-                tagFile.Save();
+                throw new Exception("    - Metal verwacht in genre");
             }
-        }//werkt alleen met 'hip-hop' en 'metal'
+
+            if (newGenresLong != genresLong)
+            {
+                tagFile.Tag.Genres = newGenres;
+                tagFile.Save();
+                throw new Exception(string.Format("   - Genre(s) aangepast van \"{0}\" naar \"{1}\"", genresLong, newGenresLong));
+            }
+        }
         public static void FixAlbumArt(string mp3file, string path, TagLib.File tagFile)
         {
             foreach (string file in Directory.GetFiles(path))
@@ -172,40 +238,6 @@ namespace TagReporter
                 }
             }
             throw new Exception("Geen Folder.jpg gevonden");
-        }
-        public static string RepairGenres(TagLib.File tagFile)
-        {
-            if (tagFile.Tag.Genres.Length == 1)
-            {
-                return tagFile.Tag.Genres[0];
-            }
-            StringBuilder genres = new StringBuilder();
-            for (int i = 0; i < tagFile.Tag.Genres.Length; i++)
-            {
-                genres.Append(tagFile.Tag.Genres[i].ToString());
-                genres.Append('/');
-            }
-            string result = genres.ToString().Trim('/');
-            return result;
-        }
-        public static void WriteLogFile()
-        {
-            System.IO.File.WriteAllText(@"C:\temp\log.txt", log.ToString());
-        }
-        public static int falseFileCounter
-        {
-            get { return mismatchedFiles; }
-            set { mismatchedFiles = value; }
-        }
-        public static int getNumberOfFiles
-        {
-            get { return numberOfFiles; }
-            set { getNumberOfFiles = value; }
-        }
-        public static bool getCheckForMetal
-        {
-            get { return checkForMetal; }
-            set { checkForMetal = value; }
         }
     }
 }
